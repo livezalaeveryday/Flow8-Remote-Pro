@@ -1,0 +1,496 @@
+{
+  "version": 1,
+  "currentBus": "main",
+  "channels": [
+    {
+      "id": 0,
+      "name": "DYN-MIC",
+      "gain": 40.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 50,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 108,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        2000,
+        5000,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 1,
+      "name": "C-MIC",
+      "gain": 40.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": true,
+      "busSends": {
+        "main": 100,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 2,
+      "name": "COMBO 3",
+      "gain": 0.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 100,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 3,
+      "name": "COMBO 4",
+      "gain": 0.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 100,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 4,
+      "name": "LINE 5/6",
+      "gain": 0.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 100,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 5,
+      "name": "LINE 7/8",
+      "gain": 0.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 105,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 6,
+      "name": "USB / BT",
+      "gain": 0.0,
+      "lowcut": 80.0,
+      "hpfOn": false,
+      "comp": 0.0,
+      "pan": 64,
+      "mute": false,
+      "solo": false,
+      "phantom": false,
+      "busSends": {
+        "main": 97,
+        "mon1": 77,
+        "mon2": 77,
+        "fx1": 64,
+        "fx2": 64
+      },
+      "peqFreq": [
+        100,
+        1000,
+        2610,
+        11290
+      ],
+      "peqQ": [
+        1.0,
+        0.8,
+        0.8,
+        1.0
+      ],
+      "peqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "peqType": [
+        "lowshelf",
+        "peak",
+        "peak",
+        "hishelf"
+      ],
+      "peqBypass": [
+        false,
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "masterBuses": {
+    "main": {
+      "level": 101,
+      "limiterdB": 0.0,
+      "pandB": 0.0,
+      "delay": 0.0,
+      "mute": false,
+      "geqFreq": [
+        63,
+        125,
+        250,
+        500,
+        1000,
+        2000,
+        4000,
+        8000,
+        16000
+      ],
+      "geqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geqQ": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "mon1": {
+      "level": 77,
+      "limiterdB": 0.0,
+      "pandB": 0.0,
+      "delay": 0.0,
+      "mute": false,
+      "geqFreq": [
+        63,
+        125,
+        250,
+        500,
+        1000,
+        2000,
+        4000,
+        8000,
+        16000
+      ],
+      "geqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geqQ": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "mon2": {
+      "level": 77,
+      "limiterdB": 0.0,
+      "pandB": 0.0,
+      "delay": 0.0,
+      "mute": false,
+      "geqFreq": [
+        63,
+        125,
+        250,
+        500,
+        1000,
+        2000,
+        4000,
+        8000,
+        16000
+      ],
+      "geqGain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "geqQ": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "fx1": {
+      "level": 100,
+      "mute": false
+    },
+    "fx2": {
+      "level": 100,
+      "mute": false
+    }
+  },
+  "fxState": {
+    "fx1": {
+      "presetIdx": 6,
+      "param1": 50,
+      "param2Idx": 1,
+      "mute": false,
+      "pan": 64
+    },
+    "fx2": {
+      "presetIdx": 0,
+      "param1": 50,
+      "param2Idx": 0,
+      "tempoMs": 500,
+      "mute": false,
+      "pan": 64
+    }
+  }
+}
