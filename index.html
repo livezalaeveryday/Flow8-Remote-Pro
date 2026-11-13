@@ -401,6 +401,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column-reverse;
+      pointer-events: none;
     }
     .meter-fill {
       width: 100%;
@@ -2333,7 +2334,9 @@
        APPLICATION SCRIPT
        ========================================================================= -->
   <script>
-    const CC_FADER = 7, CC_MUTE = 5, CC_SOLO = 6, CC_GAIN = 8, CC_LOWCUT = 9, CC_PAN = 10, CC_48V = 12;
+    const CC_FADER = 7, CC_MUTE = 5, CC_SOLO = 6, CC_GAIN = 8, CC_LOWCUT = 9, CC_PAN = 10, CC_COMP = 11, CC_48V = 12;
+    const BUS_SEND_CC = { main: 7, mon1: 14, mon2: 15, fx1: 16, fx2: 17 };
+    const MASTER_BUS_MIDI_CH = { main: 8, mon1: 9, mon2: 10, fx1: 11, fx2: 12 };
     const GEQ_BASE_FREQS = [63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
     const GEQ_FREQ_LABELS = ['63 Hz', '125 Hz', '250 Hz', '500 Hz', '1000 Hz', '2000 Hz', '4000 Hz', '8000 Hz', '16000 Hz'];
     const GEQ_BASE_CC = 11;
@@ -2347,6 +2350,39 @@
     const GEQ_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
 
     const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+    // SYSTEM IDENTITY & REAL-TIME DISPATCH ENGINE
+    const IS_LOCALHOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const CLIENT_ID = 'client_' + (IS_LOCALHOST ? 'host_' : 'lan_') + Math.random().toString(36).substring(2, 9);
+    let midiIn = null;
+    let serverNativeMidiActive = false;
+    let dispatchTimers = {};
+
+    function dispatchAction(actionObj) {
+      actionObj.clientId = CLIENT_ID;
+      actionObj.isLocalhost = IS_LOCALHOST;
+      fetch('/api/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(actionObj)
+      }).catch(() => {});
+    }
+
+    function throttledDispatchAction(actionObj) {
+      const key = actionObj.action + '_' + (actionObj.channel !== undefined ? actionObj.channel : '') + '_' + (actionObj.bus || '') + '_' + (actionObj.bandIndex !== undefined ? actionObj.bandIndex : '');
+      if (dispatchTimers[key]) {
+        dispatchTimers[key].latest = actionObj;
+        return;
+      }
+      dispatchAction(actionObj);
+      const state = { latest: null };
+      dispatchTimers[key] = state;
+      setTimeout(() => {
+        const pending = state.latest;
+        delete dispatchTimers[key];
+        if (pending) dispatchAction(pending);
+      }, 20);
+    }
 
     let midiAccess = null, midiOut = null;
     let currentBus = 'main';
@@ -2423,6 +2459,223 @@
     };
 
     
+    // =========================================================================
+    // HUD TOAST & ESSENTIAL UTILITIES
+    // =========================================================================
+    function showHudToast(msg) {
+      const toast = document.getElementById('hudToast');
+      if (!toast) return;
+      toast.textContent = msg;
+      toast.classList.add('show');
+      clearTimeout(toast._timer);
+      toast._timer = setTimeout(() => { toast.classList.remove('show'); }, 1800);
+    }
+
+    function formatFreqDisplay(f) {
+      f = parseFloat(f) || 0;
+      if (f >= 1000) return (f / 1000).toFixed(2) + ' kHz';
+      return Math.round(f) + ' Hz';
+    }
+
+    function parseFreqString(str) {
+      str = String(str || '').trim().toLowerCase();
+      let multiplier = 1;
+      if (str.endsWith('khz') || str.endsWith('k')) {
+        multiplier = 1000;
+        str = str.replace(/khz|k/, '');
+      } else if (str.endsWith('hz')) {
+        str = str.replace('hz', '');
+      }
+      const val = parseFloat(str) * multiplier;
+      return isNaN(val) ? 1000 : Math.max(20, Math.min(20000, val));
+    }
+
+    function freqToMusicalNote(freq) {
+      if (freq <= 0) return "--";
+      const midi = 69 + 12 * Math.log2(freq / 440);
+      const roundedMidi = Math.round(midi);
+      const noteName = NOTE_NAMES[((roundedMidi % 12) + 12) % 12];
+      const octave = Math.floor(roundedMidi / 12) - 1;
+      const cents = Math.round((midi - roundedMidi) * 100);
+      const centsStr = cents >= 0 ? `+${cents}ct` : `${cents}ct`;
+      return `${noteName} ${octave}, ${centsStr}`;
+    }
+
+    function freqToMidiRaw(freq) {
+      const minLog = Math.log10(20), maxLog = Math.log10(20000);
+      const norm = (Math.log10(Math.max(20, Math.min(20000, freq))) - minLog) / (maxLog - minLog);
+      return Math.max(0, Math.min(127, Math.round(norm * 127)));
+    }
+
+    function qToMidiRaw(q) {
+      const norm = (Math.max(0.1, Math.min(10.0, q)) - 0.1) / 9.9;
+      return Math.max(0, Math.min(127, Math.round(norm * 127)));
+    }
+
+    function updateMasterDelayDisplay(valMs) {
+      valMs = parseFloat(valMs) || 0.0;
+      const txt = document.getElementById('valMasterDelay');
+      if (txt) txt.textContent = valMs.toFixed(1) + ' ms';
+      const distTxt = document.getElementById('valMasterDelayDist');
+      if (distTxt) {
+        const meters = (valMs / 1000.0) * 343.0;
+        const feet = meters * 3.28084;
+        distTxt.textContent = `${meters.toFixed(2)} m / ${feet.toFixed(1)} ft`;
+      }
+    }
+
+    // =========================================================================
+    // CTRL + DOUBLECLICK RESET ENGINE (FOR ALL INDIVIDUAL PARAMETERS)
+    // =========================================================================
+    function handleCtrlReset(event, type, ...args) {
+      if (!event || (event.type !== 'dblclick' && !event.ctrlKey && !event.metaKey)) return false;
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (type === 'fader') {
+        const chIdx = args[0];
+        setChFaderLevel(chIdx, 111); // 0.0 dB
+        showHudToast(`↺ RESET: CH ${chIdx + 1} Fader → 0.0 dB`);
+        return true;
+      } else if (type === 'masterFader' || type === 'level') {
+        setMasterFaderLevel(111); // 0.0 dB
+        const lvlEl = document.getElementById('valMasterLevel');
+        if (lvlEl) lvlEl.textContent = rawToLevelDB(111);
+        showHudToast('↺ RESET: Master Fader → 0.0 dB');
+        return true;
+      } else if (type === 'pan') {
+        const chIdx = args[0];
+        appState.channels[chIdx].pan = 64; // Center
+        renderChannels();
+        sendCC(chIdx + 1, CC_PAN, 64);
+        dispatchAction({ action: 'setPan', channel: chIdx, value: 64 });
+        showHudToast(`↺ RESET: CH ${chIdx + 1} Pan → Center (0.0)`);
+        return true;
+      } else if (type === 'gain') {
+        const chIdx = args[0];
+        appState.channels[chIdx].gain = 0.0;
+        renderChannels();
+        sendCC(chIdx + 1, CC_GAIN, Math.round(((0 + 20) / 80) * 127));
+        dispatchAction({ action: 'setGain', channel: chIdx, value: 0.0 });
+        showHudToast(`↺ RESET: CH ${chIdx + 1} Gain → 0.0 dB`);
+        return true;
+      } else if (type === 'comp') {
+        const chIdx = args[0];
+        appState.channels[chIdx].comp = 0.0;
+        renderChannels();
+        sendCC(chIdx + 1, CC_COMP, 0);
+        dispatchAction({ action: 'setComp', channel: chIdx, value: 0.0 });
+        showHudToast(`↺ RESET: CH ${chIdx + 1} Compressor → OFF (0 dB)`);
+        return true;
+      } else if (type === 'lowcut') {
+        const chIdx = args[0];
+        appState.channels[chIdx].lowcut = 80.0;
+        appState.channels[chIdx].hpfOn = false;
+        renderChannels();
+        sendCC(chIdx + 1, CC_LOWCUT, 0);
+        dispatchAction({ action: 'setHPF', channel: chIdx, value: false, lowcut: 80.0 });
+        showHudToast(`↺ RESET: CH ${chIdx + 1} Low-Cut → 80 Hz (Off)`);
+        return true;
+      } else if (type === 'delay') {
+        const m = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
+        m.delay = 0.0;
+        updateMasterDelayDisplay(0.0);
+        dispatchAction({ action: 'setDelay', bus: currentGeqTarget, value: 0.0 });
+        showHudToast('↺ RESET: Speaker Delay → 0.0 ms');
+        return true;
+      } else if (type === 'limiter') {
+        const m = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
+        m.limiterdB = 0.0;
+        const limEl = document.getElementById('valMasterLimiter');
+        if (limEl) limEl.textContent = '0 dB';
+        const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+        sendCC(busCh, 8, 127);
+        dispatchAction({ action: 'setLimiter', bus: currentGeqTarget, value: 0.0 });
+        showHudToast('↺ RESET: Master Limiter → 0 dB');
+        return true;
+      } else if (type === 'balance') {
+        const m = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
+        m.pandB = 0.0;
+        const balEl = document.getElementById('valMasterBal');
+        if (balEl) balEl.textContent = '+0.0';
+        const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+        sendCC(busCh, CC_PAN, 64);
+        dispatchAction({ action: 'setBusBalance', bus: currentGeqTarget, value: 0.0 });
+        showHudToast('↺ RESET: Master Balance → Center (0.0)');
+        return true;
+      }
+      return false;
+    }
+
+    // =========================================================================
+    // PREAMP & DYNAMICS KNOB DRAG ENGINES
+    // =========================================================================
+    function startGainDrag(chIdx, e) {
+      if (handleCtrlReset(e, 'gain', chIdx)) return;
+      e.preventDefault();
+      const startY = e.clientY;
+      const c = appState.channels[chIdx];
+      const startVal = c.gain || 0.0;
+
+      function onPointerMove(moveEvent) {
+        const dy = startY - moveEvent.clientY;
+        let newVal = Math.min(60.0, Math.max(-20.0, startVal + dy * 0.5));
+        newVal = Math.round(newVal * 2) / 2;
+        c.gain = newVal;
+        const txt = document.getElementById(`gain-val-${chIdx}`);
+        if (txt) txt.textContent = (newVal >= 0 ? '+' : '') + newVal.toFixed(1) + 'dB';
+        const ind = document.getElementById(`gain-ind-${chIdx}`);
+        if (ind) {
+          const deg = ((newVal + 20) / 80) * 270 - 135;
+          ind.style.transform = `rotate(${deg}deg)`;
+        }
+        sendCC(chIdx + 1, CC_GAIN, Math.round(((newVal + 20) / 80) * 127));
+        throttledDispatchAction({ action: 'setGain', channel: chIdx, value: newVal });
+      }
+      function onPointerUp() {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        dispatchAction({ action: 'setGain', channel: chIdx, value: c.gain });
+      }
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+    }
+
+    function startCompDrag(chIdx, e) {
+      if (handleCtrlReset(e, 'comp', chIdx)) return;
+      e.preventDefault();
+      const startY = e.clientY;
+      const c = appState.channels[chIdx];
+      const startVal = c.comp || 0.0;
+
+      function onPointerMove(moveEvent) {
+        const dy = startY - moveEvent.clientY;
+        let newVal = Math.min(0.0, Math.max(-30.0, startVal - dy * 0.25));
+        newVal = Math.round(newVal * 2) / 2;
+        c.comp = newVal;
+        const txt = document.getElementById(`comp-val-${chIdx}`);
+        if (txt) {
+          txt.textContent = newVal === 0 ? 'OFF' : newVal.toFixed(1) + 'dB';
+          txt.style.color = newVal < 0 ? '#f59e0b' : '#94a3b8';
+        }
+        const ind = document.getElementById(`comp-ind-${chIdx}`);
+        if (ind) {
+          const deg = (Math.abs(newVal) / 30) * 270 - 135;
+          ind.style.transform = `rotate(${deg}deg)`;
+        }
+        const compPct = Math.round((Math.abs(newVal) / 30) * 100);
+        sendCC(chIdx + 1, CC_COMP, compPct);
+        throttledDispatchAction({ action: 'setComp', channel: chIdx, value: newVal });
+      }
+      function onPointerUp() {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        dispatchAction({ action: 'setComp', channel: chIdx, value: c.comp });
+      }
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+    }
+
     /* =========================================================================
        COMPLETE POINTER-DRIVEN FADER & INTERACTION ENGINE (CHANNEL & MASTER)
        ========================================================================= */
@@ -2448,13 +2701,25 @@
 
       updatePos(e);
 
-      track.onpointermove = pe => updatePos(pe);
-      track.onpointerup = pe => {
+      function onMove(pe) {
+        updatePos(pe);
+      }
+      function onUp(pe) {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
         track.onpointermove = null;
         track.onpointerup = null;
+        track.onpointercancel = null;
         try { track.releasePointerCapture(pe.pointerId); } catch(err){}
-      };
-      track.onpointercancel = track.onpointerup;
+      }
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+      track.onpointermove = onMove;
+      track.onpointerup = onUp;
+      track.onpointercancel = onUp;
     }
 
     function handleFaderDrag(chIdx, rawVal) {
@@ -2467,9 +2732,8 @@
       const meter = document.getElementById(`meter-fill-${chIdx}`);
       if (meter) meter.style.height = `${Math.min(95, (val / 127) * 90)}%`;
 
-      if (IS_LOCALHOST && currentBus === 'main') {
-        sendCC(chIdx + 1, CC_FADER, val);
-      }
+      const busCc = BUS_SEND_CC[currentBus] || CC_FADER;
+      sendCC(chIdx + 1, busCc, val);
       throttledDispatchAction({ action: 'setFader', channel: chIdx, bus: currentBus, value: val });
     }
 
@@ -2513,13 +2777,25 @@
 
       updatePos(e);
 
-      track.onpointermove = pe => updatePos(pe);
-      track.onpointerup = pe => {
+      function onMove(pe) {
+        updatePos(pe);
+      }
+      function onUp(pe) {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
         track.onpointermove = null;
         track.onpointerup = null;
+        track.onpointercancel = null;
         try { track.releasePointerCapture(pe.pointerId); } catch(err){}
-      };
-      track.onpointercancel = track.onpointerup;
+      }
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+      track.onpointermove = onMove;
+      track.onpointerup = onUp;
+      track.onpointercancel = onUp;
     }
 
     function handleMasterFaderDrag(rawVal) {
@@ -2533,9 +2809,8 @@
       const meter = document.getElementById('meter-fill-master');
       if (meter) meter.style.height = `${Math.min(95, (val / 127) * 90)}%`;
 
-      if (IS_LOCALHOST && currentBus === 'main') {
-        sendCC(8, CC_FADER, val);
-      }
+      const busMidiCh = MASTER_BUS_MIDI_CH[currentBus] || 8;
+      sendCC(busMidiCh, CC_FADER, val);
       throttledDispatchAction({ action: 'setMasterFader', bus: currentBus, value: val });
     }
 
@@ -2604,6 +2879,7 @@
         c.pan = p;
         renderMixerDeck();
         sendCC(chIdx + 1, CC_PAN, p);
+        dispatchAction({ action: 'setPan', channel: chIdx, value: p });
         showHudToast(`CH ${chIdx + 1} Pan: ${p === 64 ? 'Center' : p < 64 ? 'Left ' + Math.round((64-p)/64*100)+'%' : 'Right ' + Math.round((p-64)/63*100)+'%'}`);
       }
     }
@@ -2639,13 +2915,16 @@
 
     function handleGeqSliderInput(idx, dB) {
       const mBus = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
-      mBus.geqGain[idx] = Math.min(15.0, Math.max(-15.0, parseFloat(dB)));
-      const txt = document.getElementById(`val-geq-${idx}`);
-      if (txt) txt.textContent = (mBus.geqGain[idx] >= 0 ? '+' : '') + mBus.geqGain[idx].toFixed(1) + ' dB';
+      const g = Math.min(15.0, Math.max(-15.0, parseFloat(dB) || 0.0));
+      mBus.geqGain[idx] = g;
+      const input = document.getElementById(`input-geq-gain-${idx}`);
+      if (input) input.value = (g >= 0 ? '+' : '') + g.toFixed(1) + ' dB';
       const thumb = document.getElementById(`geq-thumb-${idx}`);
-      if (thumb) thumb.style.bottom = `calc(${((mBus.geqGain[idx] + 15) / 30) * 100}% - 12px)`;
+      if (thumb) thumb.style.bottom = `calc(${((g + 15) / 30) * 100}% - 12px)`;
       drawGeqCanvas();
-      sendCC(8, GEQ_BASE_CC + idx, dbToEqRaw(mBus.geqGain[idx]));
+      const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+      sendCC(busCh, GEQ_BASE_CC + idx, dbToEqRaw(g));
+      throttledDispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: idx, gain: g, freq: mBus.geqFreq[idx], q: mBus.geqQ[idx] });
     }
 
     function copyLanUrl() {
@@ -3011,11 +3290,15 @@
       c.peqBypass[idx] = !c.peqBypass[idx];
       renderStudioEqBands();
       drawEqCanvas();
-      sendCC(currentChannelIdx + 1, idx + 1, c.peqBypass[idx] ? 64 : dbToEqRaw(c.peqGain[idx]));
+      const effGain = c.peqBypass[idx] ? 0.0 : c.peqGain[idx];
+      sendCC(currentChannelIdx + 1, idx + 1, dbToEqRaw(effGain));
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: effGain, freq: c.peqFreq[idx], q: c.peqQ[idx], bypass: c.peqBypass[idx] });
     }
     function changeBandType(idx, newType) {
-      appState.channels[currentChannelIdx].peqType[idx] = newType;
+      const c = appState.channels[currentChannelIdx];
+      c.peqType[idx] = newType;
       drawEqCanvas();
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: c.peqGain[idx], freq: c.peqFreq[idx], q: c.peqQ[idx], peqType: newType });
     }
     function invertBandGain(idx) {
       const c = appState.channels[currentChannelIdx];
@@ -3023,6 +3306,7 @@
       updateBandUI(idx);
       drawEqCanvas();
       sendCC(currentChannelIdx + 1, idx + 1, dbToEqRaw(c.peqGain[idx]));
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: c.peqGain[idx], freq: c.peqFreq[idx], q: c.peqQ[idx] });
     }
     function resetAllEqCurrentChannel() {
       const c = appState.channels[currentChannelIdx];
@@ -3032,7 +3316,10 @@
       c.peqBypass = [false, false, false, false];
       renderStudioEqBands();
       drawEqCanvas();
-      for (let b = 1; b <= 4; b++) sendCC(currentChannelIdx + 1, b, 64);
+      for (let b = 0; b < 4; b++) {
+        sendCC(currentChannelIdx + 1, b + 1, 64);
+        dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: b, gain: 0.0, freq: c.peqFreq[b], q: 1.0, bypass: false });
+      }
     }
     function toggleSpectrum() {
       spectrumEnabled = !spectrumEnabled;
@@ -3040,23 +3327,31 @@
       drawEqCanvas();
     }
     function handleDirectBandFreq(idx, strVal) {
-      appState.channels[currentChannelIdx].peqFreq[idx] = parseFreqString(strVal);
+      const c = appState.channels[currentChannelIdx];
+      c.peqFreq[idx] = parseFreqString(strVal);
       updateBandUI(idx);
       drawEqCanvas();
+      sendCC(currentChannelIdx + 1, 21 + idx, freqToMidiRaw(c.peqFreq[idx]));
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: c.peqGain[idx], freq: c.peqFreq[idx], q: c.peqQ[idx] });
     }
     function handleDirectBandQ(idx, strVal) {
+      const c = appState.channels[currentChannelIdx];
       const val = parseFloat(strVal);
-      appState.channels[currentChannelIdx].peqQ[idx] = isNaN(val) ? 1.0 : Math.max(0.1, Math.min(10.0, val));
+      c.peqQ[idx] = isNaN(val) ? 1.0 : Math.max(0.1, Math.min(10.0, val));
       updateBandUI(idx);
       drawEqCanvas();
+      sendCC(currentChannelIdx + 1, 31 + idx, qToMidiRaw(c.peqQ[idx]));
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: c.peqGain[idx], freq: c.peqFreq[idx], q: c.peqQ[idx] });
     }
     function handleDirectBandGain(idx, strVal) {
+      const c = appState.channels[currentChannelIdx];
       const val = parseFloat(strVal);
       const g = isNaN(val) ? 0.0 : Math.max(-15.0, Math.min(15.0, val));
-      appState.channels[currentChannelIdx].peqGain[idx] = g;
+      c.peqGain[idx] = g;
       updateBandUI(idx);
       drawEqCanvas();
       sendCC(currentChannelIdx + 1, idx + 1, dbToEqRaw(g));
+      dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: g, freq: c.peqFreq[idx], q: c.peqQ[idx] });
     }
     function updateBandUI(idx) {
       const c = appState.channels[currentChannelIdx];
@@ -3117,14 +3412,17 @@
         const logStart = Math.log10(activeKnob.startVal);
         const logRange = Math.log10(20000) - Math.log10(20);
         c.peqFreq[idx] = Math.max(20, Math.min(20000, Math.pow(10, logStart + (dy / 250) * logRange)));
+        sendCC(currentChannelIdx + 1, 21 + idx, freqToMidiRaw(c.peqFreq[idx]));
       } else if (activeKnob.param === 'q') {
         c.peqQ[idx] = Math.max(0.1, Math.min(10.0, activeKnob.startVal + dy * 0.04));
+        sendCC(currentChannelIdx + 1, 31 + idx, qToMidiRaw(c.peqQ[idx]));
       } else if (activeKnob.param === 'gain') {
         c.peqGain[idx] = Math.max(-15.0, Math.min(15.0, activeKnob.startVal + dy * 0.15));
         sendCC(currentChannelIdx + 1, idx + 1, dbToEqRaw(c.peqGain[idx]));
       }
       updateBandUI(idx);
       drawEqCanvas();
+      throttledDispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: idx, gain: c.peqGain[idx], freq: c.peqFreq[idx], q: c.peqQ[idx] });
     }
     function onKnobDragEnd() {
       if (activeKnob) document.querySelectorAll('.rotary-dial').forEach(d => d.classList.remove('active'));
@@ -3211,6 +3509,8 @@
       updateBandUI(bandIdx);
       drawEqCanvas();
       sendCC(currentChannelIdx + 1, bandIdx + 1, dbToEqRaw(g));
+      sendCC(currentChannelIdx + 1, 21 + bandIdx, freqToMidiRaw(f));
+      throttledDispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: bandIdx, gain: g, freq: f, q: c.peqQ[bandIdx] });
     }
     function calcFilterGain(f, f0, g0, q0, type) {
       if (type === 'lowshelf') {
@@ -3405,32 +3705,10 @@
       }
     }
 
-    function handleGeqSliderInput(idx, rawVal) {
-      const val = parseInt(rawVal);
-      // Map 0..127 to -15..+15 dB
-      const dB = ((val / 127) * 30) - 15;
-      const mBus = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
-      mBus.geqGain[idx] = dB;
-
-      const input = document.getElementById(`input-geq-gain-${idx}`);
-      if (input) input.value = (dB >= 0 ? '+' : '') + dB.toFixed(1) + ' dB';
-
-      drawGeqCanvas();
-      // Send MIDI CC 11..19 on Master bus channel
-      sendCC(8, GEQ_BASE_CC + idx, val);
-    }
-
     function handleDirectGeqGain(idx, strVal) {
-      const val = parseFloat(strVal);
+      const val = parseFloat(String(strVal).replace(/[^0-9.-]/g, ''));
       const g = isNaN(val) ? 0.0 : Math.max(-15.0, Math.min(15.0, val));
-      const mBus = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
-      mBus.geqGain[idx] = g;
-
-      const slider = document.getElementById(`slider-geq-${idx}`);
-      if (slider) slider.value = dbToEqRaw(g);
-
-      drawGeqCanvas();
-      sendCC(8, GEQ_BASE_CC + idx, dbToEqRaw(g));
+      handleGeqSliderInput(idx, g);
     }
 
     function promptGeqFreq(idx) {
@@ -3440,6 +3718,9 @@
         mBus.geqFreq[idx] = parseFreqString(res);
         renderGeqSliders();
         drawGeqCanvas();
+        const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+        sendCC(busCh, 21 + idx, freqToMidiRaw(mBus.geqFreq[idx]));
+        dispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: idx, gain: mBus.geqGain[idx], freq: mBus.geqFreq[idx], q: mBus.geqQ[idx] });
       }
     }
 
@@ -3451,6 +3732,9 @@
         if (!isNaN(val)) mBus.geqQ[idx] = Math.max(0.1, Math.min(10.0, val));
         renderGeqSliders();
         drawGeqCanvas();
+        const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+        sendCC(busCh, 31 + idx, qToMidiRaw(mBus.geqQ[idx]));
+        dispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: idx, gain: mBus.geqGain[idx], freq: mBus.geqFreq[idx], q: mBus.geqQ[idx] });
       }
     }
 
@@ -3461,7 +3745,11 @@
       mBus.geqQ = Array(9).fill(1.0);
       renderGeqSliders();
       drawGeqCanvas();
-      for (let i = 0; i < 9; i++) sendCC(8, GEQ_BASE_CC + i, 64);
+      const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+      for (let i = 0; i < 9; i++) {
+        sendCC(busCh, GEQ_BASE_CC + i, 64);
+        dispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: i, gain: 0.0, freq: GEQ_BASE_FREQS[i], q: 1.0 });
+      }
     }
 
     /* MASTER ROTARY DIALS (LEVEL, BALANCE, LIMITER) */
@@ -3481,25 +3769,33 @@
       const dy = activeMasterDial.startY - e.clientY;
       const mBus = appState.masterBuses[currentGeqTarget] || appState.masterBuses.main;
 
+      const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
       if (activeMasterDial.type === 'limiter') {
         // Limiter -24 dB to 0 dB
         const val = Math.max(-24.0, Math.min(0.0, activeMasterDial.startVal + dy * 0.2));
         mBus.limiterdB = val;
         document.getElementById('valMasterLimiter').textContent = `${val.toFixed(0)} dB`;
+        sendCC(busCh, 8, Math.round(((val + 24) / 24) * 127));
+        throttledDispatchAction({ action: 'setLimiter', bus: currentGeqTarget, value: val });
       } else if (activeMasterDial.type === 'balance') {
         const val = Math.max(-10.0, Math.min(10.0, activeMasterDial.startVal + dy * 0.1));
         mBus.pandB = val;
         document.getElementById('valMasterBal').textContent = `${val >= 0 ? '+' : ''}${val.toFixed(1)}`;
+        sendCC(busCh, CC_PAN, Math.round(((val + 10) / 20) * 127));
+        throttledDispatchAction({ action: 'setBusBalance', bus: currentGeqTarget, value: val });
       } else if (activeMasterDial.type === 'delay') {
         // Delay 0.0 ms to 341.0 ms (Exact hardware limit from Block Diagram)
         const val = Math.max(0.0, Math.min(341.0, activeMasterDial.startVal + dy * 0.5));
         mBus.delay = Math.round(val * 10) / 10;
         updateMasterDelayDisplay(mBus.delay);
+        throttledDispatchAction({ action: 'setDelay', bus: currentGeqTarget, value: mBus.delay });
       } else if (activeMasterDial.type === 'level') {
         const val = Math.max(0, Math.min(127, Math.round(activeMasterDial.startVal + dy * 0.8)));
         mBus.level = val;
         document.getElementById('valMasterLevel').textContent = rawToLevelDB(val);
-        sendCC(8, CC_FADER, val);
+        if (currentBus === currentGeqTarget) updateMasterFaderUI(val);
+        sendCC(busCh, CC_FADER, val);
+        throttledDispatchAction({ action: 'setMasterFader', bus: currentGeqTarget, value: val });
       }
     }
     function onMasterDialEnd() {
@@ -3589,14 +3885,17 @@
 
       const input = document.getElementById(`input-geq-gain-${idx}`);
       const lblF = document.getElementById(`lbl-geq-freq-${idx}`);
-      const slider = document.getElementById(`slider-geq-${idx}`);
+      const thumb = document.getElementById(`geq-thumb-${idx}`);
 
       if (input) input.value = (g >= 0 ? '+' : '') + g.toFixed(1) + ' dB';
       if (lblF) lblF.textContent = formatFreqDisplay(f);
-      if (slider) slider.value = dbToEqRaw(g);
+      if (thumb) thumb.style.bottom = `calc(${((g + 15) / 30) * 100}% - 12px)`;
 
       drawGeqCanvas();
-      sendCC(8, GEQ_BASE_CC + idx, dbToEqRaw(g));
+      const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
+      sendCC(busCh, GEQ_BASE_CC + idx, dbToEqRaw(g));
+      sendCC(busCh, 21 + idx, freqToMidiRaw(f));
+      throttledDispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: idx, gain: g, freq: f, q: mBus.geqQ[idx] });
     }
 
     function drawGeqCanvas() {
@@ -4017,9 +4316,12 @@
       drawEqCanvas();
       updateReadoutBadge(c.peqFreq[selectedPointIdx], c.peqGain[selectedPointIdx], c.peqQ[selectedPointIdx]);
 
-      // Send MIDI CC 1..4 for all 4 bands
+      // Send MIDI CC 1..4, 21..24, 31..34 for all 4 bands and sync to server
       for (let b = 0; b < 4; b++) {
         sendCC(currentChannelIdx + 1, b + 1, dbToEqRaw(c.peqGain[b]));
+        sendCC(currentChannelIdx + 1, 21 + b, freqToMidiRaw(c.peqFreq[b]));
+        sendCC(currentChannelIdx + 1, 31 + b, qToMidiRaw(c.peqQ[b]));
+        dispatchAction({ action: 'setEqBand', channel: currentChannelIdx, bandIndex: b, gain: c.peqGain[b], freq: c.peqFreq[b], q: c.peqQ[b], peqType: c.peqType[b], bypass: false });
       }
 
       document.getElementById('channelPresetSelect').value = '';
@@ -4034,9 +4336,11 @@
       renderGeqSliders();
       drawGeqCanvas();
 
-      // Send MIDI CC 11..19 for all 9 bands
+      // Send MIDI CC 11..19 for all 9 bands on selected Master Bus and sync to server
+      const busCh = MASTER_BUS_MIDI_CH[currentGeqTarget] || 8;
       for (let i = 0; i < 9; i++) {
-        sendCC(8, GEQ_BASE_CC + i, dbToEqRaw(mBus.geqGain[i]));
+        sendCC(busCh, GEQ_BASE_CC + i, dbToEqRaw(mBus.geqGain[i]));
+        dispatchAction({ action: 'setGeqBand', bus: currentGeqTarget, bandIndex: i, gain: mBus.geqGain[i], freq: mBus.geqFreq[i], q: mBus.geqQ[i] });
       }
 
       document.getElementById('masterGeqPresetSelect').value = '';
@@ -4508,8 +4812,40 @@
       if (modal) modal.classList.remove('active');
     }
 
-    // Close any modal when clicking its dark background backdrop
-    document.addEventListener('DOMContentLoaded', () => {
+    // =========================================================================
+    // APPLICATION BOOTSTRAP & INITIALIZATION
+    // =========================================================================
+    async function syncServerHardwareStatus() {
+      try {
+        const resp = await fetch('/api/status');
+        if (resp.ok) {
+          const st = await resp.json();
+          if (st.lanUrl) {
+            const lanTxt = document.getElementById('lanIpText');
+            if (lanTxt) lanTxt.textContent = st.lanUrl.replace('http://', '');
+            const lanIn = document.getElementById('lanUrlInput');
+            if (lanIn) lanIn.value = st.lanUrl;
+          }
+          if (st.midiConnected) {
+            serverNativeMidiActive = true;
+            const lbl = document.getElementById('midiDeviceLabel');
+            const led = document.getElementById('midiStatusLed');
+            if (lbl) {
+              lbl.textContent = (st.midiOutName || 'FLOW 8 MIDI') + ' (USB DIRECT)';
+              lbl.style.color = '#22c55e';
+            }
+            if (led) led.classList.add('active');
+          }
+        }
+      } catch (e) {}
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      // 1. Render initial mixer UI immediately
+      renderMixerDeck();
+      initFxRackUI();
+
+      // 2. Close any modal when clicking its dark background backdrop
       document.querySelectorAll('.modal-overlay').forEach(modal => {
         modal.addEventListener('pointerdown', (e) => {
           if (e.target === modal) {
@@ -4517,6 +4853,18 @@
           }
         });
       });
+
+      // 3. Load base JSON library structure, restore live session, and check server native MIDI
+      await loadRealAppData();
+      await restoreLiveSessionFromServer();
+      await syncServerHardwareStatus();
+
+      // 4. Start real-time SSE sync & fallback Web MIDI if server native MIDI is not active
+      initSSE();
+      if (!serverNativeMidiActive) {
+        initMIDI();
+      }
+      setInterval(syncServerHardwareStatus, 4000);
     });
 
     // Spacebar hotkey for Tap Tempo when FX Rack is open
@@ -4529,35 +4877,6 @@
         }
       }
     });
-
-
-    // =========================================================================
-    // MULTI-SCREEN SYNC & HARDWARE ROUTING ENGINE (LOCALHOST MASTER + LAN CLIENTS)
-    // =========================================================================
-    const IS_LOCALHOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    const CLIENT_ID = 'client_' + (IS_LOCALHOST ? 'host_' : 'lan_') + Math.random().toString(36).substring(2, 9);
-    let midiIn = null;
-
-    // Dispatch action to Server (updates session & broadcasts to other screens)
-    function dispatchAction(actionObj) {
-      actionObj.clientId = CLIENT_ID;
-      actionObj.isLocalhost = IS_LOCALHOST;
-      fetch('/api/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(actionObj)
-      }).catch(() => {});
-    }
-
-    let dispatchTimers = {};
-    function throttledDispatchAction(actionObj) {
-      const key = actionObj.action + '_' + (actionObj.channel !== undefined ? actionObj.channel : '') + '_' + (actionObj.bus || '');
-      if (dispatchTimers[key]) return;
-      dispatchTimers[key] = setTimeout(() => {
-        delete dispatchTimers[key];
-        dispatchAction(actionObj);
-      }, 25);
-    }
 
     // Pull live session from Server/Hardware when screen is opened or refreshed
     async function restoreLiveSessionFromServer() {
@@ -4791,6 +5110,50 @@
         const mBus = appState.masterBuses[bus] || appState.masterBuses.main;
         mBus.delay = msg.value;
         updateMasterDelayDisplay(msg.value);
+      } else if (action === 'setLimiter') {
+        const bus = msg.bus || currentGeqTarget || 'main';
+        const mBus = appState.masterBuses[bus] || appState.masterBuses.main;
+        mBus.limiterdB = msg.value;
+        if (currentGeqTarget === bus) {
+          const el = document.getElementById('valMasterLimiter');
+          if (el) el.textContent = `${msg.value.toFixed(0)} dB`;
+        }
+      } else if (action === 'setBusBalance') {
+        const bus = msg.bus || currentGeqTarget || 'main';
+        const mBus = appState.masterBuses[bus] || appState.masterBuses.main;
+        mBus.pandB = msg.value;
+        if (currentGeqTarget === bus) {
+          const el = document.getElementById('valMasterBal');
+          if (el) el.textContent = `${msg.value >= 0 ? '+' : ''}${msg.value.toFixed(1)}`;
+        }
+      } else if (action === 'setEqBand') {
+        const ch = msg.channel;
+        const bIdx = msg.bandIndex;
+        if (appState.channels[ch] && bIdx >= 0 && bIdx < 4) {
+          if (msg.gain !== undefined) appState.channels[ch].peqGain[bIdx] = msg.gain;
+          if (msg.freq !== undefined) appState.channels[ch].peqFreq[bIdx] = msg.freq;
+          if (msg.q !== undefined) appState.channels[ch].peqQ[bIdx] = msg.q;
+          if (msg.peqType !== undefined) appState.channels[ch].peqType[bIdx] = msg.peqType;
+          if (msg.bypass !== undefined) appState.channels[ch].peqBypass[bIdx] = msg.bypass;
+          if (currentChannelIdx === ch) {
+            updateBandUI(bIdx);
+            drawEqCanvas();
+          }
+          renderChannels();
+        }
+      } else if (action === 'setGeqBand') {
+        const bus = msg.bus || 'main';
+        const bIdx = msg.bandIndex;
+        const mBus = appState.masterBuses[bus];
+        if (mBus && bIdx >= 0 && bIdx < 9) {
+          if (msg.gain !== undefined) mBus.geqGain[bIdx] = msg.gain;
+          if (msg.freq !== undefined) mBus.geqFreq[bIdx] = msg.freq;
+          if (msg.q !== undefined) mBus.geqQ[bIdx] = msg.q;
+          if (currentGeqTarget === bus) {
+            renderGeqSliders();
+            drawGeqCanvas();
+          }
+        }
       } else if (action === 'setFx') {
         const fxNum = msg.fxNum || 1;
         const target = (fxNum === 1 ? fxState.fx1 : fxState.fx2);
